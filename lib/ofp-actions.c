@@ -284,6 +284,9 @@ enum ofp_raw_action_type {
 
     /* NX1.0+(34): struct nx_action_conjunction. */
     NXAST_RAW_CONJUNCTION,
+
+    /* NX1.0+(35): struct nx_action_tun_metadata, ... */
+    NXAST_RAW_TUN_METADATA,
 };
 
 /* OpenFlow actions are always a multiple of 8 bytes in length. */
@@ -2482,7 +2485,7 @@ set_field_parse__(char *arg, struct ofpbuf *ofpacts,
     }
     sf->field = mf;
     delim[0] = '\0';
-    error = mf_parse(mf, value, &sf->value, &sf->mask);
+    error = mf_parse(mf, value, &sf->value, &sf->mask, NULL);
     if (error) {
         return error;
     }
@@ -2691,6 +2694,72 @@ format_STACK_POP(const struct ofpact_stack *a, struct ds *s)
 {
     nxm_format_stack_pop(a, s);
 }
+
+/* Action structure for NXAST_TUN_METADATA. */
+struct nx_action_tun_metadata {
+    ovs_be16 type;
+    ovs_be16 len;
+    ovs_be32 vendor;
+    ovs_be16 subtype;
+    uint8_t data_len;
+    uint8_t zero[4];
+    uint8_t data[256];
+};
+OFP_ASSERT(sizeof(struct nx_action_tun_metadata) == 272);
+
+static enum ofperr
+decode_NXAST_RAW_TUN_METADATA(const struct nx_action_tun_metadata *natm,
+                              struct ofpbuf *out)
+{
+    struct ofpact_tun_metadata *otm;
+    otm = ofpact_put_TUN_METADATA(out);
+    otm->data_len = natm->data_len;
+    memcpy(otm->data, natm->data, natm->data_len);
+    return 0;
+}
+
+static void
+encode_TUN_METADATA(const struct ofpact_tun_metadata *otm,
+                    enum ofp_version ofp_version OVS_UNUSED, struct ofpbuf *out)
+{
+    struct nx_action_tun_metadata *natm = put_NXAST_TUN_METADATA(out);
+    natm->data_len = otm->data_len;
+    memcpy(natm->data, otm->data, otm->data_len);
+}
+
+static char *
+parse_TUN_METADATA(char *arg, struct ofpbuf *ofpacts,
+                   enum ofputil_protocol *usable_protocols OVS_UNUSED)
+{
+    struct ofpact_tun_metadata *otm;
+    const struct mf_field *mf = mf_from_name("tun_metadata");
+    union mf_value metadata, mask;
+    char *error;
+    int len;
+
+    error = mf_parse(mf, arg, &metadata, &mask, &len);
+    if (error) {
+        return error;
+    }
+    otm = ofpact_put_TUN_METADATA(ofpacts);
+    otm->data_len = len;
+    memcpy(otm->data, metadata.tun_metadata, len);
+    return NULL;
+}
+
+static void
+format_TUN_METADATA(const struct ofpact_tun_metadata *otm,
+                     struct ds *s)
+{
+    int i;
+    if (otm->data_len) {
+        ds_put_format(s, "tun_metadata=");
+        for (i = 0; i < otm->data_len; i++) {
+            ds_put_format(s, "%02"SCNx8, otm->data[i]);
+        }
+    }
+}
+
 
 /* Action structure for NXAST_DEC_TTL_CNT_IDS.
  *
@@ -4747,6 +4816,7 @@ ofpact_is_set_or_move_action(const struct ofpact *a)
     case OFPACT_STRIP_VLAN:
     case OFPACT_WRITE_ACTIONS:
     case OFPACT_WRITE_METADATA:
+    case OFPACT_TUN_METADATA:
         return false;
     default:
         OVS_NOT_REACHED();
@@ -4806,6 +4876,7 @@ ofpact_is_allowed_in_actions_set(const struct ofpact *a)
     case OFPACT_SAMPLE:
     case OFPACT_STACK_POP:
     case OFPACT_STACK_PUSH:
+    case OFPACT_TUN_METADATA:
 
     /* The action set may only include actions and thus
      * may not include any instructions */
@@ -5018,6 +5089,7 @@ ovs_instruction_type_from_ofpact_type(enum ofpact_type type)
     case OFPACT_NOTE:
     case OFPACT_EXIT:
     case OFPACT_SAMPLE:
+    case OFPACT_TUN_METADATA:
     default:
         return OVSINST_OFPIT11_APPLY_ACTIONS;
     }
@@ -5607,6 +5679,9 @@ ofpact_check__(enum ofputil_protocol *usable_protocols, struct ofpact *a,
     case OFPACT_GROUP:
         return 0;
 
+    case OFPACT_TUN_METADATA:
+        return 0;
+
     default:
         OVS_NOT_REACHED();
     }
@@ -6006,6 +6081,7 @@ ofpact_outputs_to_port(const struct ofpact *ofpact, ofp_port_t port)
     case OFPACT_GOTO_TABLE:
     case OFPACT_METER:
     case OFPACT_GROUP:
+    case OFPACT_TUN_METADATA:
     default:
         return false;
     }
